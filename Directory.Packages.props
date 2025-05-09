@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <CentralPackageTransitivePinningEnabled>false</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageVersion Include="System.IO.Ports" Version="9.0.4" />
+    <PackageVersion Include="Colorful.Console" Version="1.2.15" />
+    <PackageVersion Include="System.Management" Version="9.0.4" />
+  </ItemGroup>
+</Project>
