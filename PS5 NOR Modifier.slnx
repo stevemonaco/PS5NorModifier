@@ -6,5 +6,5 @@
   <Project Path="PS5 NOR Modifier/PS5 NOR Modifier.csproj">
     <Platform Solution="*|x86" Project="x86" />
   </Project>
-  <Project Path="UART-CL/UART-CL.csproj" Id="5bfc3b50-fb68-9995-f3b4-d8498bd3c7e1" />
+  <Project Path="UART-CL/UartCL.csproj" Id="5bfc3b50-fb68-9995-f3b4-d8498bd3c7e1" />
 </Solution>

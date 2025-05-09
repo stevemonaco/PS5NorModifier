@@ -11,6 +11,7 @@ using System.Xml;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Globalization;
+using UartCL;
 
 #region Reminders (remove before publishing)
 // Add check inside sub menu to confirm that the selected .bin file is a valid PS5 dump
@@ -24,137 +25,9 @@ bool showMenu = false;
 // Set the application title
 System.Console.Title = appTitle;
 
-#region Checksum generation
-static string CalculateChecksum(string str)
-{
-    // Math stuff. I don't understand it either!
-    int sum = 0;
-    foreach (char c in str)
-    {
-        sum += (int)c;
-    }
-    return str + ":" + (sum & 0xFF).ToString("X2");
-}
-#endregion
+UartDatabaseService dbService = new();
 
-#region Hex conversions
-static string HexStringToString(string hexString)
-{
-    if (hexString == null || (hexString.Length & 1) == 1)
-    {
-        throw new ArgumentException();
-    }
-    var sb = new StringBuilder();
-    for (var i = 0; i < hexString.Length; i += 2)
-    {
-        var hexChar = hexString.Substring(i, 2);
-        sb.Append((char)Convert.ToByte(hexChar, 16));
-    }
-    return sb.ToString();
-}
-
-static IEnumerable<int> PatternAt(byte[] source, byte[] pattern)
-{
-    for (int i = 0; i < source.Length; i++)
-    {
-        if (source.Skip(i).Take(pattern.Length).SequenceEqual(pattern))
-        {
-            yield return i;
-        }
-    }
-}
-
-static byte[] ConvertHexStringToByteArray(string hexString)
-{
-    if (hexString.Length % 2 != 0)
-    {
-        throw new ArgumentException(String.Format(CultureInfo.InvariantCulture, "The binary key cannot have an odd number of digits: {0}", hexString));
-    }
-
-    byte[] data = new byte[hexString.Length / 2];
-    for (int index = 0; index < data.Length; index++)
-    {
-        string byteValue = hexString.Substring(index * 2, 2);
-        data[index] = Convert.ToByte(byteValue, 16); // Parse hex string directly
-    }
-
-    return data;
-}
-#endregion
-
-#region Error parsing (via XML database)
-
-// When fetching errors from the PS5 we want to be able to convert the received codes into readable text to make it easier
-// for the user to understand what the problem is. By the time this function is called we should have an up to date XML
-// database to compare error codes with.
-static string ParseErrors(string errorCode)
-{
-    string results = "";
-
-    try
-    {
-        // Check if the XML file exists
-        if (File.Exists("errorDB.xml"))
-        {
-            // Load the XML file
-            XmlDocument xmlDoc = new XmlDocument();
-            xmlDoc.Load("errorDB.xml");
-
-            // Get the root node
-            XmlNode root = xmlDoc.DocumentElement;
-
-            // Check if the root node is <errorCodes>
-            if (root.Name == "errorCodes")
-            {
-                // No error was found in the database
-                if (root.ChildNodes.Count == 0)
-                {
-                    results = "No result found for error code " + errorCode;
-                }
-                else
-                {
-                    // Loop through each errorCode node
-                    foreach (XmlNode errorCodeNode in root.ChildNodes)
-                    {
-                        // Check if the node is <errorCode>
-                        if (errorCodeNode.Name == "errorCode")
-                        {
-                            // Get ErrorCode and Description
-                            string errorCodeValue = errorCodeNode.SelectSingleNode("ErrorCode").InnerText;
-                            string description = errorCodeNode.SelectSingleNode("Description").InnerText;
-
-                            // Check if the current error code matches the requested error code
-                            if (errorCodeValue == errorCode)
-                            {
-                                // Output the results
-                                results = "Error code: " + errorCodeValue + Environment.NewLine + "Description: " + description;
-                                break; // Exit the loop after finding the matching error code
-                            }
-                        }
-                    }
-                }
-            }
-            else
-            {
-                results = "Error: Invalid XML database file. Please reconfigure the application, redownload the offline database, or uncheck the option to use the offline database.";
-            }
-        }
-        else
-        {
-            results = "Error: Local XML file not found.";
-        }
-    }
-    catch (Exception ex)
-    {
-        results = "Error: " + ex.Message;
-    }
-
-    return results;
-}
-
-#endregion
-
-#region Obtian the friendly name of the available COM ports
+#region Obtain the friendly name of the available COM ports
 static string GetFriendlyName(string portName)
 {
     // Declare the friendly name variable for later use
@@ -201,12 +74,11 @@ static void ShowHeader()
 
 #region Check if error database exists
 // Let's check and see if the database exists. If not, download it!
-if (!System.IO.File.Exists("errorDB.xml"))
+if (!dbService.IsLocalDatabaseAvailable())
 {
     ShowHeader();
     System.Console.WriteLine("Downloading latest database file. Please wait...");
-
-    bool success = DownloadDatabase("http://uartcodes.com/xml.php", "errorDB.xml");
+    var success = await dbService.DownloadRemoteDatabase("http://uartcodes.com/xml.php", "errorDB.xml");
 
     if (success)
     {
@@ -226,95 +98,16 @@ else
 }
 #endregion
 
-#region URL Handling
-
-// Let's create a function that will allow us to download the latest version of the database if we have access to the internet.
-static bool DownloadDatabase(string url, string savePath)
-{
-    using (WebClient client = new WebClient())
-    {
-        try
-        {
-            client.DownloadFile(url, savePath);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            return false;
-        }
-    }
-}
-
-// Function to open a new URL in the default browser
-static void OpenUrl(string url)
-{
-    // Let's wait two seconds first
-    Thread.Sleep(2000);
-    // Wrap this in a try loop so we don't get any unexpected crashes
-    try
-    {
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = url,
-            UseShellExecute = true
-        });
-    }
-    catch (Exception ex)
-    {
-        // Catch any errors and let the user know
-        System.Console.WriteLine($"Error opening URL: {ex.Message}");
-    }
-}
-
-#endregion
-
-#region Map suffixes to regions (for console variant)
-// Define a dictionary to map suffixes to regions
-Dictionary<string, string> regionMap = new Dictionary<string, string>
-{
-    { "00A", "Japan" },
-    { "00B", "Japan" },
-    { "01A", "US, Canada, (North America)" },
-    { "01B", "US, Canada, (North America)" },
-    { "15A", "US, Canada, (North America)" },
-    { "15B", "US, Canada, (North America)" },
-    { "02A", "Australia / New Zealand, (Oceania)" },
-    { "02B", "Australia / New Zealand, (Oceania)" },
-    { "03A", "United Kingdom / Ireland" },
-    { "03B", "United Kingdom / Ireland" },
-    { "04A", "Europe / Middle East / Africa" },
-    { "04B", "Europe / Middle East / Africa" },
-    { "05A", "South Korea" },
-    { "05B", "South Korea" },
-    { "06A", "Southeast Asia / Hong Kong" },
-    { "06B", "Southeast Asia / Hong Kong" },
-    { "07A", "Taiwan" },
-    { "07B", "Taiwan" },
-    { "08A", "Russia, Ukraine, India, Central Asia" },
-    { "08B", "Russia, Ukraine, India, Central Asia" },
-    { "09A", "Mainland China" },
-    { "09B", "Mainland China" },
-    { "11A", "Mexico, Central America, South America" },
-    { "11B", "Mexico, Central America, South America" },
-    { "14A", "Mexico, Central America, South America" },
-    { "14B", "Mexico, Central America, South America" },
-    { "16A", "Europe / Middle East / Africa" },
-    { "16B", "Europe / Middle East / Africa" },
-    { "18A", "Singapore, Korea, Asia" },
-    { "18B", "Singapore, Korea, Asia" }
-};
-#endregion
-
 #region Display main menu
 // Show the menu if showMenu is set to true
 while (showMenu)
 {
-    showMenu = MainMenu(appTitle, regionMap);
+    showMenu = await MainMenu(appTitle);
 }
 #endregion
 
 #region Display sub menu for working with BIOS files
-static void RunSubMenu(string appTitle, Dictionary<string, string> regionMap)
+static void RunSubMenu(string appTitle)
 {
     string pathToDump = "";
     bool subMenuRunning = true;
@@ -491,19 +284,19 @@ static void RunSubMenu(string appTitle, Dictionary<string, string> regionMap)
                         // Catch any exceptions and ignore, setting variantValue to null
                     }
 
-                    ConsoleModelInfo = HexStringToString(variantValue);
+                    ConsoleModelInfo = Helpers.HexStringToString(variantValue);
 
                     string region = "Unknown Region";
                     if (ConsoleModelInfo != null && ConsoleModelInfo.Length >= 3)
                     {
                         string suffix = ConsoleModelInfo.Substring(ConsoleModelInfo.Length - 3);
-                        if (regionMap.ContainsKey(suffix))
+                        if (RegionMap.Map.ContainsKey(suffix))
                         {
-                            region = regionMap[suffix];
+                            region = RegionMap.Map[suffix];
                         }
                     }
 
-                    ModelInfo = HexStringToString(variantValue) + " - " + region;
+                    ModelInfo = Helpers.HexStringToString(variantValue) + " - " + region;
                     #endregion
 
                     #region Get Console Serial Number
@@ -527,8 +320,8 @@ static void RunSubMenu(string appTitle, Dictionary<string, string> regionMap)
 
                     if (serialValue != null)
                     {
-                        ConsoleSerialNumber = HexStringToString(serialValue);
-                        ConsoleSerialNumber = HexStringToString(serialValue);
+                        ConsoleSerialNumber = Helpers.HexStringToString(serialValue);
+                        ConsoleSerialNumber = Helpers.HexStringToString(serialValue);
 
                     }
                     else
@@ -559,7 +352,7 @@ static void RunSubMenu(string appTitle, Dictionary<string, string> regionMap)
 
                     if (moboSerialValue != null)
                     {
-                        MotherboardSerialNumber = HexStringToString(moboSerialValue);
+                        MotherboardSerialNumber = Helpers.HexStringToString(moboSerialValue);
                     }
                     else
                     {
@@ -716,11 +509,11 @@ static void RunSubMenu(string appTitle, Dictionary<string, string> regionMap)
                                 // Modify the values to set the file as "Digital Edition"
                                 try
                                 {
-                                    byte[] find = ConvertHexStringToByteArray(Regex.Replace("22010101", "0x|[ ,]", string.Empty).Normalize().Trim());
-                                    byte[] replace = ConvertHexStringToByteArray(Regex.Replace("22030101", "0x|[ ,]", string.Empty).Normalize().Trim());
+                                    byte[] find = Helpers.ConvertHexStringToByteArray(Regex.Replace("22010101", "0x|[ ,]", string.Empty).Normalize().Trim());
+                                    byte[] replace = Helpers.ConvertHexStringToByteArray(Regex.Replace("22030101", "0x|[ ,]", string.Empty).Normalize().Trim());
 
                                     byte[] bytes = File.ReadAllBytes(pathToDump);
-                                    foreach (int index in PatternAt(bytes, find))
+                                    foreach (int index in Helpers.PatternAt(bytes, find))
                                     {
                                         for (int i = index, replaceIndex = 0; i < bytes.Length && replaceIndex < replace.Length; i++, replaceIndex++)
                                         {
@@ -729,10 +522,10 @@ static void RunSubMenu(string appTitle, Dictionary<string, string> regionMap)
                                         File.WriteAllBytes(pathToDump, bytes);
                                     }
 
-                                    byte[] find2 = ConvertHexStringToByteArray(Regex.Replace("22020101", "0x|[ ,]", string.Empty).Normalize().Trim());
-                                    byte[] replace2 = ConvertHexStringToByteArray(Regex.Replace("22030101", "0x|[ ,]", string.Empty).Normalize().Trim());
+                                    byte[] find2 = Helpers.ConvertHexStringToByteArray(Regex.Replace("22020101", "0x|[ ,]", string.Empty).Normalize().Trim());
+                                    byte[] replace2 = Helpers.ConvertHexStringToByteArray(Regex.Replace("22030101", "0x|[ ,]", string.Empty).Normalize().Trim());
 
-                                    foreach (int index in PatternAt(bytes, find2))
+                                    foreach (int index in Helpers.PatternAt(bytes, find2))
                                     {
                                         for (int i = index, replaceIndex = 0; i < bytes.Length && replaceIndex < replace.Length; i++, replaceIndex++)
                                         {
@@ -849,11 +642,11 @@ static void RunSubMenu(string appTitle, Dictionary<string, string> regionMap)
                                 // Modify the values to set the file as "Disc Edition"
                                 try
                                 {
-                                    byte[] find = ConvertHexStringToByteArray(Regex.Replace("22010101", "0x|[ ,]", string.Empty).Normalize().Trim());
-                                    byte[] replace = ConvertHexStringToByteArray(Regex.Replace("22020101", "0x|[ ,]", string.Empty).Normalize().Trim());
+                                    byte[] find = Helpers.ConvertHexStringToByteArray(Regex.Replace("22010101", "0x|[ ,]", string.Empty).Normalize().Trim());
+                                    byte[] replace = Helpers.ConvertHexStringToByteArray(Regex.Replace("22020101", "0x|[ ,]", string.Empty).Normalize().Trim());
 
                                     byte[] bytes = File.ReadAllBytes(pathToDump);
-                                    foreach (int index in PatternAt(bytes, find))
+                                    foreach (int index in Helpers.PatternAt(bytes, find))
                                     {
                                         for (int i = index, replaceIndex = 0; i < bytes.Length && replaceIndex < replace.Length; i++, replaceIndex++)
                                         {
@@ -862,10 +655,10 @@ static void RunSubMenu(string appTitle, Dictionary<string, string> regionMap)
                                         File.WriteAllBytes(pathToDump, bytes);
                                     }
 
-                                    byte[] find2 = ConvertHexStringToByteArray(Regex.Replace("22030101", "0x|[ ,]", string.Empty).Normalize().Trim());
-                                    byte[] replace2 = ConvertHexStringToByteArray(Regex.Replace("22020101", "0x|[ ,]", string.Empty).Normalize().Trim());
+                                    byte[] find2 = Helpers.ConvertHexStringToByteArray(Regex.Replace("22030101", "0x|[ ,]", string.Empty).Normalize().Trim());
+                                    byte[] replace2 = Helpers.ConvertHexStringToByteArray(Regex.Replace("22020101", "0x|[ ,]", string.Empty).Normalize().Trim());
 
-                                    foreach (int index in PatternAt(bytes, find2))
+                                    foreach (int index in Helpers.PatternAt(bytes, find2))
                                     {
                                         for (int i = index, replaceIndex = 0; i < bytes.Length && replaceIndex < replace.Length; i++, replaceIndex++)
                                         {
@@ -981,11 +774,11 @@ static void RunSubMenu(string appTitle, Dictionary<string, string> regionMap)
                                 // Modify the values to set the file as "Slim Edition"
                                 try
                                 {
-                                    byte[] find = ConvertHexStringToByteArray(Regex.Replace("22020101", "0x|[ ,]", string.Empty).Normalize().Trim());
-                                    byte[] replace = ConvertHexStringToByteArray(Regex.Replace("22010101", "0x|[ ,]", string.Empty).Normalize().Trim());
+                                    byte[] find = Helpers.ConvertHexStringToByteArray(Regex.Replace("22020101", "0x|[ ,]", string.Empty).Normalize().Trim());
+                                    byte[] replace = Helpers.ConvertHexStringToByteArray(Regex.Replace("22010101", "0x|[ ,]", string.Empty).Normalize().Trim());
 
                                     byte[] bytes = File.ReadAllBytes(pathToDump);
-                                    foreach (int index in PatternAt(bytes, find))
+                                    foreach (int index in Helpers.PatternAt(bytes, find))
                                     {
                                         for (int i = index, replaceIndex = 0; i < bytes.Length && replaceIndex < replace.Length; i++, replaceIndex++)
                                         {
@@ -994,10 +787,10 @@ static void RunSubMenu(string appTitle, Dictionary<string, string> regionMap)
                                         File.WriteAllBytes(pathToDump, bytes);
                                     }
 
-                                    byte[] find2 = ConvertHexStringToByteArray(Regex.Replace("22030101", "0x|[ ,]", string.Empty).Normalize().Trim());
-                                    byte[] replace2 = ConvertHexStringToByteArray(Regex.Replace("22010101", "0x|[ ,]", string.Empty).Normalize().Trim());
+                                    byte[] find2 = Helpers.ConvertHexStringToByteArray(Regex.Replace("22030101", "0x|[ ,]", string.Empty).Normalize().Trim());
+                                    byte[] replace2 = Helpers.ConvertHexStringToByteArray(Regex.Replace("22010101", "0x|[ ,]", string.Empty).Normalize().Trim());
 
-                                    foreach (int index in PatternAt(bytes, find2))
+                                    foreach (int index in Helpers.PatternAt(bytes, find2))
                                     {
                                         for (int i = index, replaceIndex = 0; i < bytes.Length && replaceIndex < replace.Length; i++, replaceIndex++)
                                         {
@@ -1119,7 +912,7 @@ static void RunSubMenu(string appTitle, Dictionary<string, string> regionMap)
                                     Array.Copy(newSerialBytes, newSerialBytesPadded, Math.Min(newSerialBytes.Length, 17));
 
                                     // Find the index of the old serial number in the file
-                                    int index = PatternAt(existingFile, oldSerialBytes).FirstOrDefault();
+                                    int index = Helpers.PatternAt(existingFile, oldSerialBytes).FirstOrDefault();
 
                                     if (index != -1)
                                     {
@@ -1192,7 +985,7 @@ static void RunSubMenu(string appTitle, Dictionary<string, string> regionMap)
                         // Catch any exceptions and ignore, setting MotherboardSerial to null
                     }
 
-                    MotherboardSerial = HexStringToString(moboValue);
+                    MotherboardSerial = Helpers.HexStringToString(moboValue);
 
                     if (!string.IsNullOrEmpty(moboValue) != null && !string.IsNullOrEmpty(MotherboardSerial))
                     {
@@ -1237,11 +1030,11 @@ static void RunSubMenu(string appTitle, Dictionary<string, string> regionMap)
                                     byte[] newSerialBytes = Encoding.UTF8.GetBytes(newSerial);
                                     string newSerialHex = Convert.ToHexString(newSerialBytes);
 
-                                    byte[] find = ConvertHexStringToByteArray(Regex.Replace(oldSerialHex, "0x|[ ,]", string.Empty).Normalize().Trim());
-                                    byte[] replace = ConvertHexStringToByteArray(Regex.Replace(newSerialHex, "0x|[ ,]", string.Empty).Normalize().Trim());
+                                    byte[] find = Helpers.ConvertHexStringToByteArray(Regex.Replace(oldSerialHex, "0x|[ ,]", string.Empty).Normalize().Trim());
+                                    byte[] replace = Helpers.ConvertHexStringToByteArray(Regex.Replace(newSerialHex, "0x|[ ,]", string.Empty).Normalize().Trim());
 
                                     byte[] bytes = File.ReadAllBytes(pathToDump);
-                                    foreach (int index in PatternAt(bytes, find))
+                                    foreach (int index in Helpers.PatternAt(bytes, find))
                                     {
                                         for (int i = index, replaceIndex = 0; i < bytes.Length && replaceIndex < replace.Length; i++, replaceIndex++)
                                         {
@@ -1317,7 +1110,7 @@ static void RunSubMenu(string appTitle, Dictionary<string, string> regionMap)
                         // Catch any exceptions and ignore, setting variantValue to null
                     }
 
-                    ConsoleModel = HexStringToString(variantValue);
+                    ConsoleModel = Helpers.HexStringToString(variantValue);
 
                     if(!string.IsNullOrEmpty(variantValue) != null && !string.IsNullOrEmpty(ConsoleModel))
                     {
@@ -1363,11 +1156,11 @@ static void RunSubMenu(string appTitle, Dictionary<string, string> regionMap)
                                     byte[] newModelBytes = Encoding.UTF8.GetBytes(newModel);
                                     string newModelHex = Convert.ToHexString(newModelBytes);
 
-                                    byte[] find = ConvertHexStringToByteArray(Regex.Replace(oldModelHex, "0x|[ ,]", string.Empty).Normalize().Trim());
-                                    byte[] replace = ConvertHexStringToByteArray(Regex.Replace(newModelHex, "0x|[ ,]", string.Empty).Normalize().Trim());
+                                    byte[] find = Helpers.ConvertHexStringToByteArray(Regex.Replace(oldModelHex, "0x|[ ,]", string.Empty).Normalize().Trim());
+                                    byte[] replace = Helpers.ConvertHexStringToByteArray(Regex.Replace(newModelHex, "0x|[ ,]", string.Empty).Normalize().Trim());
 
                                     byte[] bytes = File.ReadAllBytes(pathToDump);
-                                    foreach (int index in PatternAt(bytes, find))
+                                    foreach (int index in Helpers.PatternAt(bytes, find))
                                     {
                                         for (int i = index, replaceIndex = 0; i < bytes.Length && replaceIndex < replace.Length; i++, replaceIndex++)
                                         {
@@ -1440,8 +1233,9 @@ static void RunSubMenu(string appTitle, Dictionary<string, string> regionMap)
         #endregion
 
 #region Main
-static bool MainMenu(string appTitle, Dictionary<string, string> regionMap)
+static async Task<bool> MainMenu(string appTitle)
 {
+    var dbService = new UartDatabaseService();
 
     System.Console.Clear();
     ShowHeader();
@@ -1530,7 +1324,7 @@ static bool MainMenu(string appTitle, Dictionary<string, string> regionMap)
                     // Create a command variable depending on what number we're at in the loop (where "i" is the current number)
                     var command = $"errlog {i}";
                     // Add the checksum to the command
-                    var checksum = CalculateChecksum(command);
+                    var checksum = Helpers.CalculateChecksum(command);
                     // Send the current command to the UART device
                     serialPort.WriteLine(checksum);
 
@@ -1575,7 +1369,7 @@ static bool MainMenu(string appTitle, Dictionary<string, string> regionMap)
                                 // Now that the error code has been isolated from the rest of the junk sent by the system
                                 // let's check it against the database. The error database will need to return XML results
                                 System.Console.ForegroundColor = ConsoleColor.Green;
-                                string errorResult = ParseErrors(errorCode);
+                                string errorResult = dbService.ParseErrors(errorCode);
                                 System.Console.WriteLine(errorResult);
                                 System.Console.ResetColor();
                             }
@@ -1653,7 +1447,7 @@ static bool MainMenu(string appTitle, Dictionary<string, string> regionMap)
                 // Reset the foreground color to default before proceeding
                 System.Console.ResetColor();
 
-                var checksum = CalculateChecksum("errlog clear");
+                var checksum = Helpers.CalculateChecksum("errlog clear");
                 serialPort.WriteLine(checksum);
 
                 List<string> UARTLines = new();
@@ -1751,7 +1545,7 @@ static bool MainMenu(string appTitle, Dictionary<string, string> regionMap)
                     }
                     else if (!string.IsNullOrEmpty(UARTCommand)) // If the command is not empty or null
                     {
-                        var checksum = CalculateChecksum(UARTCommand);
+                        var checksum = Helpers.CalculateChecksum(UARTCommand);
                         serialPort.WriteLine(checksum);
 
                         List<string> UARTLines = new();
@@ -1795,7 +1589,7 @@ static bool MainMenu(string appTitle, Dictionary<string, string> regionMap)
             // This is a sub menu for working with BIOS files. IMO it's not very elegant to have sub menus but at least this way
             // we don't have to use different apps for working with BIOS files...
 
-            RunSubMenu(appTitle, regionMap);
+            RunSubMenu(appTitle);
             return true;
         #endregion
         #region Launch readme
@@ -1849,7 +1643,7 @@ static bool MainMenu(string appTitle, Dictionary<string, string> regionMap)
         case "6":
             // Thanks for buying me a coffee :)
             System.Console.WriteLine("Thanks for buying me a coffee. I'll redirect you in your default browser...");
-            OpenUrl("https://www.streamelements.com/thecod3r/tip");
+            Helpers.OpenUrl("https://www.streamelements.com/thecod3r/tip");
             System.Console.WriteLine("Press Enter to continue...");
             System.Console.ReadLine();
             return true;
@@ -1858,7 +1652,7 @@ static bool MainMenu(string appTitle, Dictionary<string, string> regionMap)
         case "7":
             System.Console.WriteLine("Downloading latest database file. Please wait...");
 
-            bool success = DownloadDatabase("http://uartcodes.com/xml.php", "errorDB.xml");
+            bool success = await dbService.DownloadRemoteDatabase("http://uartcodes.com/xml.php", "errorDB.xml");
 
             if (success)
             {
